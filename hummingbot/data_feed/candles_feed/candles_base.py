@@ -56,7 +56,7 @@ class CandlesBase(NetworkBase):
         self._trading_pair = trading_pair
         self._ex_trading_pair = self.get_exchange_trading_pair(trading_pair)
         self._ws_candle_available = asyncio.Event()
-        self._ping_timeout = None
+        self._ping_timeout = 30
         if interval in self.intervals.keys():
             self.interval = interval
         else:
@@ -436,7 +436,7 @@ class CandlesBase(NetworkBase):
                 await asyncio.wait_for(self._process_websocket_messages_task(websocket_assistant=websocket_assistant),
                                        timeout=self._ping_timeout)
             except asyncio.TimeoutError:
-                if self._ping_timeout is not None:
+                if self._ping_payload is not None:
                     ping_request = WSJSONRequest(payload=self._ping_payload)
                     await websocket_assistant.send(request=ping_request)
 
