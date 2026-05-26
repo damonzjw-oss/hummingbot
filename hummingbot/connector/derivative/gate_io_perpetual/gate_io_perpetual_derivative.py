@@ -600,7 +600,11 @@ class GateIoPerpetualDerivative(PerpetualDerivativePyBase):
         :param position_msg: The position event message payload
         """
         ex_trading_pair = position_msg["contract"]
-        trading_pair = await self.trading_pair_associated_to_exchange_symbol(symbol=ex_trading_pair)
+        try:
+            trading_pair = await self.trading_pair_associated_to_exchange_symbol(symbol=ex_trading_pair)
+        except KeyError:
+            self.logger().warning(f"Skipping position for symbol not in map: {ex_trading_pair}")
+            return
         amount = Decimal(str(position_msg["size"]))
         trading_rule = self._trading_rules[trading_pair]
         amount_precision = Decimal(trading_rule.min_base_amount_increment)
@@ -695,7 +699,11 @@ class GateIoPerpetualDerivative(PerpetualDerivativePyBase):
 
         for position in positions:
             ex_trading_pair = position.get("contract")
-            hb_trading_pair = await self.trading_pair_associated_to_exchange_symbol(ex_trading_pair)
+            try:
+                hb_trading_pair = await self.trading_pair_associated_to_exchange_symbol(ex_trading_pair)
+            except KeyError:
+                self.logger().warning(f"Skipping position for symbol not in map: {ex_trading_pair}")
+                continue
 
             amount = Decimal(position.get("size"))
             ex_mode = position.get("mode")

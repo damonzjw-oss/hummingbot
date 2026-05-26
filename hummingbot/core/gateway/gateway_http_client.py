@@ -136,7 +136,7 @@ class GatewayHttpClient:
             else:
                 # Non-SSL connection for development
                 conn = aiohttp.TCPConnector(ssl=False)
-            cls._shared_client = aiohttp.ClientSession(connector=conn)
+            cls._shared_client = aiohttp.ClientSession(connector=conn, trust_env=True)
         return cls._shared_client
 
     @classmethod

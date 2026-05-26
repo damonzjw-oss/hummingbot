@@ -18,7 +18,7 @@ class GateioPerpetualCandles(CandlesBase):
 
     def __init__(self, trading_pair: str, interval: str = "1m", max_records: int = 150):
         super().__init__(trading_pair, interval, max_records)
-        self.quanto_multiplier = None
+        self.quanto_multiplier = 1.0  # default; updated by initialize_exchange_data
 
     @property
     def name(self):
@@ -74,7 +74,11 @@ class GateioPerpetualCandles(CandlesBase):
             url=self.rest_url + CONSTANTS.CONTRACT_INFO_URL.format(contract=self._ex_trading_pair),
             throttler_limit_id=CONSTANTS.CONTRACT_INFO_URL
         )
-        quanto_multiplier = float(data.get("quanto_multiplier"))
+        quanto_multiplier = data.get("quanto_multiplier")
+        if quanto_multiplier is not None:
+            quanto_multiplier = float(quanto_multiplier)
+        else:
+            quanto_multiplier = 1.0
         self.quanto_multiplier = quanto_multiplier
         return quanto_multiplier
 
@@ -109,7 +113,8 @@ class GateioPerpetualCandles(CandlesBase):
             high = i.get("h")
             low = i.get("l")
             close = i.get("c")
-            volume = i.get("v") * self.quanto_multiplier
+            quanto = self.quanto_multiplier if self.quanto_multiplier is not None else 1.0
+            volume = i.get("v", 0) * quanto
             quote_asset_volume = i.get("sum")
             n_trades = 0
             taker_buy_base_volume = 0
@@ -135,7 +140,8 @@ class GateioPerpetualCandles(CandlesBase):
                 candles_row_dict["high"] = i["h"]
                 candles_row_dict["low"] = i["l"]
                 candles_row_dict["close"] = i["c"]
-                candles_row_dict["volume"] = i["v"] * self.quanto_multiplier
+                quanto = self.quanto_multiplier if self.quanto_multiplier is not None else 1.0
+                candles_row_dict["volume"] = i["v"] * quanto
                 candles_row_dict["quote_asset_volume"] = i.get("sum", 0)
                 candles_row_dict["n_trades"] = 0
                 candles_row_dict["taker_buy_base_volume"] = 0
