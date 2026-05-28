@@ -43,14 +43,13 @@ class GateIoPerpetualAPIUserStreamDataSource(UserStreamTrackerDataSource):
         :param websocket_assistant: the websocket assistant used to connect to the exchange
         """
         try:
-            user_info_symbols = [self._user_id]
-            symbols = ["!all"]
-            user_info_symbols.extend(symbols)
+            user_id_payload = [self._user_id]
+            all_contracts_payload = [self._user_id, "!all"]
             orders_change_payload = {
                 "time": int(self._time()),
                 "channel": CONSTANTS.USER_ORDERS_ENDPOINT_NAME,
                 "event": "subscribe",
-                "payload": user_info_symbols
+                "payload": all_contracts_payload
             }
             subscribe_order_change_request: WSJSONRequest = WSJSONRequest(
                 payload=orders_change_payload,
@@ -60,7 +59,7 @@ class GateIoPerpetualAPIUserStreamDataSource(UserStreamTrackerDataSource):
                 "time": int(self._time()),
                 "channel": CONSTANTS.USER_TRADES_ENDPOINT_NAME,
                 "event": "subscribe",
-                "payload": user_info_symbols
+                "payload": all_contracts_payload
             }
             subscribe_trades_request: WSJSONRequest = WSJSONRequest(
                 payload=trades_payload,
@@ -69,14 +68,25 @@ class GateIoPerpetualAPIUserStreamDataSource(UserStreamTrackerDataSource):
                 "time": int(self._time()),
                 "channel": CONSTANTS.USER_POSITIONS_ENDPOINT_NAME,
                 "event": "subscribe",
-                "payload": user_info_symbols
+                "payload": all_contracts_payload
             }
             subscribe_positions_request: WSJSONRequest = WSJSONRequest(
                 payload=positions_payload,
                 is_auth_required=True)
+            balances_payload = {
+                "time": int(self._time()),
+                "channel": CONSTANTS.USER_BALANCE_ENDPOINT_NAME,
+                "event": "subscribe",
+                "payload": user_id_payload
+            }
+            subscribe_balances_request: WSJSONRequest = WSJSONRequest(
+                payload=balances_payload,
+                is_auth_required=True)
+
             await websocket_assistant.send(subscribe_order_change_request)
             await websocket_assistant.send(subscribe_trades_request)
             await websocket_assistant.send(subscribe_positions_request)
+            await websocket_assistant.send(subscribe_balances_request)
 
             self.logger().info("Subscribed to private order changes channels...")
         except asyncio.CancelledError:
@@ -96,6 +106,7 @@ class GateIoPerpetualAPIUserStreamDataSource(UserStreamTrackerDataSource):
             CONSTANTS.USER_TRADES_ENDPOINT_NAME,
             CONSTANTS.USER_ORDERS_ENDPOINT_NAME,
             CONSTANTS.USER_POSITIONS_ENDPOINT_NAME,
+            CONSTANTS.USER_BALANCE_ENDPOINT_NAME,
             CONSTANTS.TICKER_ENDPOINT_NAME,
         ]:
             queue.put_nowait(event_message)

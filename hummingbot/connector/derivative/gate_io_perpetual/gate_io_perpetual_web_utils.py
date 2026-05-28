@@ -1,7 +1,9 @@
 import time
-from typing import Any, Dict, Optional
+from typing import Any, Callable, Dict, Optional
 
 import hummingbot.connector.derivative.gate_io_perpetual.gate_io_perpetual_constants as CONSTANTS
+from hummingbot.connector.time_synchronizer import TimeSynchronizer
+from hummingbot.connector.utils import TimeSynchronizerRESTPreProcessor
 from hummingbot.core.api_throttler.async_throttler import AsyncThrottler
 from hummingbot.core.web_assistant.auth import AuthBase
 from hummingbot.core.web_assistant.web_assistants_factory import WebAssistantsFactory
@@ -27,11 +29,24 @@ def private_rest_url(endpoint: str, domain: str = CONSTANTS.DEFAULT_DOMAIN) -> s
 
 def build_api_factory(
         throttler: Optional[AsyncThrottler] = None,
+        time_synchronizer: Optional[TimeSynchronizer] = None,
+        time_provider: Optional[Callable] = None,
         auth: Optional[AuthBase] = None) -> WebAssistantsFactory:
+    time_synchronizer = time_synchronizer or TimeSynchronizer()
+    time_provider = time_provider or (lambda: get_current_server_time(throttler=throttler))
     throttler = throttler or create_throttler()
     api_factory = WebAssistantsFactory(
         throttler=throttler,
-        auth=auth)
+        auth=auth,
+        rest_pre_processors=[
+            TimeSynchronizerRESTPreProcessor(synchronizer=time_synchronizer, time_provider=time_provider),
+        ],
+    )
+    return api_factory
+
+
+def build_api_factory_without_time_synchronizer_pre_processor(throttler: AsyncThrottler) -> WebAssistantsFactory:
+    api_factory = WebAssistantsFactory(throttler=throttler)
     return api_factory
 
 

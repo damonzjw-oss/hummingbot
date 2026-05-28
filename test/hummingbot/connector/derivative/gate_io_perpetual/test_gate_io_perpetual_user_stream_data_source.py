@@ -114,6 +114,15 @@ class TestGateIoPerpetualAPIUserStreamDataSource(IsolatedAsyncioWrapperTestCase)
                 "status": "success"
             }
         }
+        result_subscribe_balances = {
+            "time": 1611541000,
+            "channel": CONSTANTS.USER_BALANCE_ENDPOINT_NAME,
+            "event": "subscribe",
+            "error": None,
+            "result": {
+                "status": "success"
+            }
+        }
 
         self.mocking_assistant.add_websocket_aiohttp_message(
             websocket_mock=ws_connect_mock.return_value,
@@ -124,6 +133,9 @@ class TestGateIoPerpetualAPIUserStreamDataSource(IsolatedAsyncioWrapperTestCase)
         self.mocking_assistant.add_websocket_aiohttp_message(
             websocket_mock=ws_connect_mock.return_value,
             message=json.dumps(result_subscribe_positions))
+        self.mocking_assistant.add_websocket_aiohttp_message(
+            websocket_mock=ws_connect_mock.return_value,
+            message=json.dumps(result_subscribe_balances))
 
         output_queue = asyncio.Queue()
 
@@ -134,7 +146,7 @@ class TestGateIoPerpetualAPIUserStreamDataSource(IsolatedAsyncioWrapperTestCase)
         sent_subscription_messages = self.mocking_assistant.json_messages_sent_through_websocket(
             websocket_mock=ws_connect_mock.return_value)
 
-        self.assertEqual(3, len(sent_subscription_messages))
+        self.assertEqual(4, len(sent_subscription_messages))
         expected_orders_subscription = {
             "time": int(self.mock_time_provider.time()),
             "channel": CONSTANTS.USER_ORDERS_ENDPOINT_NAME,

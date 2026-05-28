@@ -19,4 +19,4 @@ class GateIoPerpetualWebUtilsTest(unittest.TestCase):
         self.assertIsInstance(api_factory, WebAssistantsFactory)
         self.assertIsNone(api_factory._auth)
 
-        self.assertTrue(2, len(api_factory._rest_pre_processors))
+        self.assertEqual(1, len(api_factory._rest_pre_processors))

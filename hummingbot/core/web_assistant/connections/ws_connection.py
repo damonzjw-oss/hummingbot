@@ -145,10 +145,12 @@ class WSConnection:
     def _build_resp(msg: aiohttp.WSMessage) -> WSResponse:
         if msg.type == aiohttp.WSMsgType.BINARY:
             data = msg.data
+        elif msg.data is None:
+            data = None
         else:
             try:
                 data = msg.json()
-            except JSONDecodeError:
+            except (JSONDecodeError, TypeError):
                 data = msg.data
         response = WSResponse(data)
         return response

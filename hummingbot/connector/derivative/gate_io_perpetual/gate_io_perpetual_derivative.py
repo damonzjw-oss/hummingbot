@@ -21,10 +21,10 @@ from hummingbot.connector.perpetual_derivative_py_base import PerpetualDerivativ
 from hummingbot.connector.trading_rule import TradingRule
 from hummingbot.connector.utils import combine_to_hb_trading_pair
 from hummingbot.core.clock import Clock
-from hummingbot.core.data_type.common import OrderType, PositionMode, PositionSide, TradeType
+from hummingbot.core.data_type.common import OrderType, PositionAction, PositionMode, PositionSide, TradeType
 from hummingbot.core.data_type.in_flight_order import InFlightOrder, OrderState, OrderUpdate, TradeUpdate
 from hummingbot.core.data_type.order_book_tracker_data_source import OrderBookTrackerDataSource
-from hummingbot.core.data_type.trade_fee import TokenAmount, TradeFeeBase
+from hummingbot.core.data_type.trade_fee import TokenAmount, TradeFeeBase, TradeFeeSchema
 from hummingbot.core.data_type.user_stream_tracker_data_source import UserStreamTrackerDataSource
 from hummingbot.core.network_iterator import NetworkStatus
 from hummingbot.core.utils.estimate_fee import build_trade_fee
@@ -64,6 +64,7 @@ class GateIoPerpetualDerivative(PerpetualDerivativePyBase):
         self._gate_io_perpetual_user_id = gate_io_perpetual_user_id
         self._domain = domain
         self._position_mode = None
+        self._position_margin_mode: Dict[str, str] = {}
         self._trading_required = trading_required
         self._trading_pairs = trading_pairs
 
@@ -165,26 +166,19 @@ class GateIoPerpetualDerivative(PerpetualDerivativePyBase):
         super().start(clock, timestamp)
 
     def _is_request_exception_related_to_time_synchronizer(self, request_exception: Exception):
-        # API documentation does not clarify the error message for timestamp related problems
-        return False
+        error_description = str(request_exception)
+        return "timestamp" in error_description.lower()
 
     def _is_order_not_found_during_status_update_error(self, status_update_exception: Exception) -> bool:
-        # TODO: implement this method correctly for the connector
-        # The default implementation was added when the functionality to detect not found orders was introduced in the
-        # ExchangePyBase class. Also fix the unit test test_lost_order_removed_if_not_found_during_order_status_update
-        # when replacing the dummy implementation
-        return False
+        return "ORDER_NOT_FOUND" in str(status_update_exception)
 
     def _is_order_not_found_during_cancelation_error(self, cancelation_exception: Exception) -> bool:
-        # TODO: implement this method correctly for the connector
-        # The default implementation was added when the functionality to detect not found orders was introduced in the
-        # ExchangePyBase class. Also fix the unit test test_cancel_order_not_found_in_the_exchange when replacing the
-        # dummy implementation
-        return False
+        return "ORDER_NOT_FOUND" in str(cancelation_exception)
 
     def _create_web_assistants_factory(self) -> WebAssistantsFactory:
         return web_utils.build_api_factory(
             throttler=self._throttler,
+            time_synchronizer=self._time_synchronizer,
             auth=self._auth)
 
     def _create_order_book_data_source(self) -> OrderBookTrackerDataSource:
@@ -426,10 +420,17 @@ class GateIoPerpetualDerivative(PerpetualDerivativePyBase):
             order_fill: Dict[str, Any],
             order: InFlightOrder):
         fee_asset = order.quote_asset
-        # no "position_action" in return, should use AddedToCostTradeFee, same as new_spot_fee
-        fee = TradeFeeBase.new_spot_fee(
+        size = Decimal(str(order_fill["size"]))
+        close_size = Decimal(str(order_fill.get("close_size", "0")))
+
+        if close_size == 0:
+            position_action = PositionAction.OPEN
+        else:
+            position_action = PositionAction.CLOSE
+
+        fee = TradeFeeBase.new_perpetual_fee(
             fee_schema=self.trade_fee_schema(),
-            trade_type=order.trade_type,
+            position_action=position_action,
             percent_token=fee_asset,
             flat_fees=[TokenAmount(
                 amount=Decimal(order_fill["fee"]),
@@ -443,10 +444,9 @@ class GateIoPerpetualDerivative(PerpetualDerivativePyBase):
             exchange_order_id=order.exchange_order_id,
             trading_pair=order.trading_pair,
             fee=fee,
-            fill_base_amount=abs(self._format_size_to_amount(order.trading_pair, (Decimal(str(order_fill["size"]))))),
+            fill_base_amount=abs(self._format_size_to_amount(order.trading_pair, size)),
             fill_quote_amount=abs(
-                self._format_size_to_amount(order.trading_pair, (Decimal(str(order_fill["size"])))) * Decimal(
-                    order_fill["price"])),
+                self._format_size_to_amount(order.trading_pair, size) * Decimal(order_fill["price"])),
             fill_price=Decimal(order_fill["price"]),
             fill_timestamp=order_fill["create_time"],
         )
@@ -504,34 +504,52 @@ class GateIoPerpetualDerivative(PerpetualDerivativePyBase):
                 state = OrderState.PARTIALLY_FILLED
         return state
 
-    # use bybitperpetual sample,not gateio sample
-
     def _get_fee(self,
                  base_currency: str,
                  quote_currency: str,
                  order_type: OrderType,
                  order_side: TradeType,
+                 position_action: PositionAction,
                  amount: Decimal,
                  price: Decimal = s_decimal_NaN,
                  is_maker: Optional[bool] = None) -> TradeFeeBase:
-        is_maker = is_maker or False
-        fee = build_trade_fee(
-            self.name,
-            is_maker,
-            base_currency=base_currency,
-            quote_currency=quote_currency,
-            order_type=order_type,
-            order_side=order_side,
-            amount=amount,
-            price=price,
-        )
+        is_maker = is_maker or (order_type is OrderType.LIMIT_MAKER)
+        trading_pair = combine_to_hb_trading_pair(base=base_currency, quote=quote_currency)
+        if trading_pair in self._trading_fees:
+            fee_schema = self._trading_fees[trading_pair]
+            fee_rate = fee_schema.maker_percent_fee_decimal if is_maker else fee_schema.taker_percent_fee_decimal
+            fee = TradeFeeBase.new_perpetual_fee(
+                fee_schema=fee_schema,
+                position_action=position_action,
+                percent=fee_rate,
+                percent_token=fee_schema.percent_fee_token,
+            )
+        else:
+            fee = build_trade_fee(
+                self.name,
+                is_maker,
+                base_currency=base_currency,
+                quote_currency=quote_currency,
+                order_type=order_type,
+                order_side=order_side,
+                amount=amount,
+                price=price,
+            )
         return fee
 
     async def _update_trading_fees(self):
-        """
-        Update fees information from the exchange
-        """
-        pass
+        exchange_info = await self._api_get(
+            path_url=CONSTANTS.EXCHANGE_INFO_URL,
+            limit_id=CONSTANTS.EXCHANGE_INFO_URL,
+        )
+        for contract in exchange_info:
+            if not web_utils.is_exchange_information_valid(contract):
+                continue
+            trading_pair = await self.trading_pair_associated_to_exchange_symbol(symbol=contract["name"])
+            self._trading_fees[trading_pair] = TradeFeeSchema(
+                maker_percent_fee_decimal=Decimal(str(contract["maker_fee_rate"])),
+                taker_percent_fee_decimal=Decimal(str(contract["taker_fee_rate"])),
+            )
 
     async def _user_stream_event_listener(self):
         """
@@ -600,17 +618,19 @@ class GateIoPerpetualDerivative(PerpetualDerivativePyBase):
         :param position_msg: The position event message payload
         """
         ex_trading_pair = position_msg["contract"]
-        try:
-            trading_pair = await self.trading_pair_associated_to_exchange_symbol(symbol=ex_trading_pair)
-        except KeyError:
-            self.logger().warning(f"Skipping position for symbol not in map: {ex_trading_pair}")
-            return
+        trading_pair = await self.trading_pair_associated_to_exchange_symbol(symbol=ex_trading_pair)
         amount = Decimal(str(position_msg["size"]))
         trading_rule = self._trading_rules[trading_pair]
         amount_precision = Decimal(trading_rule.min_base_amount_increment)
         position_side = PositionSide.LONG if Decimal(position_msg.get("size")) > 0 else PositionSide.SHORT
         pos_key = self._perpetual_trading.position_key(trading_pair, position_side)
         entry_price = Decimal(str(position_msg["entry_price"]))
+        margin_mode = position_msg.get("pos_margin_mode", "isolated")
+        self._position_margin_mode[trading_pair] = margin_mode
+        if margin_mode == "cross":
+            leverage = Decimal(str(position_msg.get("cross_leverage_limit", "0")))
+        else:
+            leverage = Decimal(str(position_msg.get("leverage", "0")))
         position = self._perpetual_trading.get_position(trading_pair, position_side)
         if position is not None:
             if amount == Decimal("0"):
@@ -619,7 +639,8 @@ class GateIoPerpetualDerivative(PerpetualDerivativePyBase):
                 position.update_position(position_side=position_side,
                                          unrealized_pnl=None,
                                          entry_price=entry_price,
-                                         amount=amount * amount_precision)
+                                         amount=amount * amount_precision,
+                                         leverage=leverage)
         else:
             await self._update_positions()
 
@@ -693,20 +714,20 @@ class GateIoPerpetualDerivative(PerpetualDerivativePyBase):
 
         positions = await self._api_get(
             path_url=CONSTANTS.POSITION_INFORMATION_URL,
+            params={"holding": "true"},
             is_auth_required=True,
             limit_id=CONSTANTS.POSITION_INFORMATION_URL
         )
 
         for position in positions:
             ex_trading_pair = position.get("contract")
-            try:
-                hb_trading_pair = await self.trading_pair_associated_to_exchange_symbol(ex_trading_pair)
-            except KeyError:
-                self.logger().warning(f"Skipping position for symbol not in map: {ex_trading_pair}")
-                continue
+            hb_trading_pair = await self.trading_pair_associated_to_exchange_symbol(ex_trading_pair)
 
             amount = Decimal(position.get("size"))
             ex_mode = position.get("mode")
+            margin_mode = position.get("pos_margin_mode", "isolated")
+            self._position_margin_mode[hb_trading_pair] = margin_mode
+
             if ex_mode == 'single':
                 mode = PositionMode.ONEWAY
                 position_side = PositionSide.LONG if Decimal(position.get("size")) > 0 else PositionSide.SHORT
@@ -721,7 +742,10 @@ class GateIoPerpetualDerivative(PerpetualDerivativePyBase):
 
                 unrealized_pnl = Decimal(position.get("unrealised_pnl"))
                 entry_price = Decimal(position.get("entry_price"))
-                leverage = Decimal(position.get("leverage"))
+                if margin_mode == "cross":
+                    leverage = Decimal(position.get("cross_leverage_limit"))
+                else:
+                    leverage = Decimal(position.get("leverage"))
                 position = Position(
                     trading_pair=hb_trading_pair,
                     position_side=position_side,
@@ -793,9 +817,16 @@ class GateIoPerpetualDerivative(PerpetualDerivativePyBase):
             endpoint = CONSTANTS.ONEWAY_SET_LEVERAGE_PATH_URL.format(contract=exchange_symbol)
         else:
             endpoint = CONSTANTS.HEDGE_SET_LEVERAGE_PATH_URL.format(contract=exchange_symbol)
-        data = {
-            "leverage": leverage,
-        }
+        margin_mode = self._position_margin_mode.get(trading_pair, "isolated")
+        if margin_mode == "cross":
+            data = {
+                "leverage": "0",
+                "cross_leverage_limit": leverage,
+            }
+        else:
+            data = {
+                "leverage": leverage,
+            }
         resp = await self._api_post(
             path_url=endpoint,
             params=data,
@@ -803,16 +834,42 @@ class GateIoPerpetualDerivative(PerpetualDerivativePyBase):
             limit_id=CONSTANTS.ONEWAY_SET_LEVERAGE_PATH_URL,
         )
         if isinstance(resp, dict):
-            return_leverage = resp['leverage']
+            resp_item = resp
         else:
-            return_leverage = resp[0]['leverage']
+            resp_item = resp[0]
+        if margin_mode == "cross":
+            return_leverage = resp_item.get('cross_leverage_limit', '0')
+        else:
+            return_leverage = resp_item.get('leverage', '0')
         if int(return_leverage) != leverage:
             success = False
             msg = "leverage is diff"
         return success, msg
 
     async def _fetch_last_fee_payment(self, trading_pair: str) -> Tuple[int, Decimal, Decimal]:
-        pass
+        exchange_symbol = await self.exchange_symbol_associated_to_pair(trading_pair)
+        payment_response = await self._api_get(
+            path_url=CONSTANTS.ACCOUNT_BOOK_PATH_URL,
+            params={"contract": exchange_symbol, "type": "fund", "limit": 1},
+            is_auth_required=True,
+            limit_id=CONSTANTS.ACCOUNT_BOOK_PATH_URL,
+        )
+        if len(payment_response) < 1:
+            timestamp, funding_rate, payment = 0, Decimal("-1"), Decimal("-1")
+            return timestamp, funding_rate, payment
 
-    async def _update_funding_payment(self, trading_pair: str, fire_event_on_new: bool) -> bool:
-        return True
+        funding_payment = payment_response[0]
+        timestamp = int(funding_payment["time"])
+        payment = Decimal(str(funding_payment["change"]))
+
+        funding_rate_response = await self._api_get(
+            path_url=CONSTANTS.FUNDING_RATE_TIME_PATH_URL,
+            params={"contract": exchange_symbol, "limit": 1},
+            limit_id=CONSTANTS.FUNDING_RATE_TIME_PATH_URL,
+        )
+        if len(funding_rate_response) > 0:
+            funding_rate = Decimal(str(funding_rate_response[0]["rate"]))
+        else:
+            funding_rate = Decimal("-1")
+
+        return timestamp, funding_rate, payment

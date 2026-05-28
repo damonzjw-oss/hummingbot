@@ -7,7 +7,6 @@ HBOT_ORDER_ID = "t-HBOT"
 MAX_ID_LEN = 30
 
 REST_URL = "https://api.gateio.ws/api/v4"
-REST_URL_AUTH = "/api/v4"
 WS_URL = "wss://fx-ws.gateio.ws/v4/ws/usdt"
 
 # Public API v4 Endpoints
@@ -25,6 +24,7 @@ USER_BALANCES_PATH_URL = "futures/usdt/accounts"
 POSITION_INFORMATION_URL = "futures/usdt/positions"
 ORDER_STATUS_PATH_URL = "futures/usdt/orders/{id}"
 USER_ORDERS_PATH_URL = "futures/usdt/orders"
+ACCOUNT_BOOK_PATH_URL = "futures/usdt/account_book"
 SET_POSITION_MODE_URL = "futures/usdt/dual_mode"
 ONEWAY_SET_LEVERAGE_PATH_URL = "futures/usdt/positions/{contract}/leverage"
 HEDGE_SET_LEVERAGE_PATH_URL = "futures/usdt/dual_comp/positions/{contract}/leverage"
@@ -98,5 +98,7 @@ RATE_LIMITS = [
     RateLimit(limit_id=ORDER_BOOK_PATH_URL, limit=300, time_interval=1,
               linked_limits=[LinkedLimitWeightPair(PUBLIC_URL_POINTS_LIMIT_ID)]),
     RateLimit(limit_id=MY_TRADES_PATH_URL, limit=400, time_interval=1,
+              linked_limits=[LinkedLimitWeightPair(PRIVATE_URL_POINTS_LIMIT_ID)]),
+    RateLimit(limit_id=ACCOUNT_BOOK_PATH_URL, limit=400, time_interval=1,
               linked_limits=[LinkedLimitWeightPair(PRIVATE_URL_POINTS_LIMIT_ID)]),
 ]

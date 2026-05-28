@@ -84,7 +84,9 @@ class GateIoPerpetualDerivativeTests(AbstractPerpetualDerivativeTests.PerpetualD
 
     @property
     def funding_payment_url(self):
-        pass
+        url = web_utils.public_rest_url(endpoint=CONSTANTS.ACCOUNT_BOOK_PATH_URL)
+        url_regex = re.compile(f"^{url}".replace(".", r"\.").replace("?", r"\?") + ".*")
+        return url_regex
 
     @property
     def balance_request_mock_response_only_base(self):
@@ -207,12 +209,59 @@ class GateIoPerpetualDerivativeTests(AbstractPerpetualDerivativeTests.PerpetualD
         ]
         return "INVALID-PAIR", mock_response
 
+    @property
     def empty_funding_payment_mock_response(self):
-        pass
+        return []
 
     @aioresponses()
-    def test_funding_payment_polling_loop_sends_update_event(self, *args, **kwargs):
-        pass
+    def test_funding_payment_polling_loop_sends_update_event(self, mock_api):
+        self._simulate_trading_rules_initialized()
+
+        account_book_url = self.funding_payment_url
+        funding_rate_url = web_utils.public_rest_url(endpoint=CONSTANTS.FUNDING_RATE_TIME_PATH_URL)
+        funding_rate_url_regex = re.compile(
+            f"^{funding_rate_url}".replace(".", r"\.").replace("?", r"\?") + ".*"
+        )
+
+        # Initial call - no funding payment entries
+        mock_api.get(account_book_url, body=json.dumps(self.empty_funding_payment_mock_response))
+
+        async def run_test():
+            _ = asyncio.create_task(self.exchange._funding_payment_polling_loop())
+
+            # Allow task to start - on first pass no event is emitted (initialization)
+            await asyncio.sleep(0.2)
+            self.assertEqual(0, len(self.funding_payment_logger.event_log))
+
+            # Second call - funding payment available
+            mock_api.get(
+                account_book_url, body=json.dumps(self.funding_payment_mock_response), repeat=True
+            )
+            mock_api.get(
+                funding_rate_url_regex,
+                body=json.dumps([
+                    {"rate": str(self.target_funding_payment_funding_rate),
+                     "time": self.target_funding_payment_timestamp}
+                ]),
+                repeat=True,
+            )
+
+            self.exchange._funding_fee_poll_notifier.set()
+            await asyncio.sleep(0.2)
+            self.assertEqual(1, len(self.funding_payment_logger.event_log))
+
+            self.exchange._funding_fee_poll_notifier.set()
+            await asyncio.sleep(0.2)
+
+        self.async_run_with_timeout(run_test())
+
+        self.assertEqual(1, len(self.funding_payment_logger.event_log))
+        funding_event = self.funding_payment_logger.event_log[0]
+        self.assertEqual(self.target_funding_payment_timestamp, funding_event.timestamp)
+        self.assertEqual(self.exchange.name, funding_event.market)
+        self.assertEqual(self.trading_pair, funding_event.trading_pair)
+        self.assertEqual(self.target_funding_payment_payment_amount, funding_event.amount)
+        self.assertEqual(self.target_funding_payment_funding_rate, funding_event.funding_rate)
 
     @property
     def network_status_request_successful_mock_response(self):
@@ -423,6 +472,7 @@ class GateIoPerpetualDerivativeTests(AbstractPerpetualDerivativeTests.PerpetualD
                     "maintenance_rate": 0.005,
                     "margin": 49.999890611186,
                     "mode": "single",
+                    "pos_margin_mode": "isolated",
                     "realised_pnl": -1.25e-8,
                     "realised_point": 0,
                     "risk_limit": 100,
@@ -456,6 +506,7 @@ class GateIoPerpetualDerivativeTests(AbstractPerpetualDerivativeTests.PerpetualD
                     "maintenance_rate": 0.005,
                     "margin": 49.999890611186,
                     "mode": "single",
+                    "pos_margin_mode": "isolated",
                     "realised_pnl": -1.25e-8,
                     "realised_point": 0,
                     "risk_limit": 100,
@@ -474,7 +525,15 @@ class GateIoPerpetualDerivativeTests(AbstractPerpetualDerivativeTests.PerpetualD
 
     @property
     def funding_payment_mock_response(self):
-        raise NotImplementedError
+        return [
+            {
+                "time": self.target_funding_payment_timestamp,
+                "type": "fund",
+                "text": f"{self.exchange_trading_pair}:12345",
+                "change": str(self.target_funding_payment_payment_amount),
+                "balance": "1000.50"
+            }
+        ]
 
     @property
     def expected_supported_position_modes(self) -> List[PositionMode]:
@@ -687,16 +746,33 @@ class GateIoPerpetualDerivativeTests(AbstractPerpetualDerivativeTests.PerpetualD
             self, order: InFlightOrder, mock_api: aioresponses,
             callback: Optional[Callable] = lambda *args, **kwargs: None
     ) -> str:
-        # Implement the expected not found response when enabling test_cancel_order_not_found_in_the_exchange
-        raise NotImplementedError
+        url = web_utils.public_rest_url(
+            endpoint=CONSTANTS.ORDER_DELETE_PATH_URL.format(id=order.exchange_order_id)
+        )
+        regex_url = re.compile(f"^{url}".replace(".", r"\.").replace("?", r"\?") + ".*")
+        mock_api.delete(
+            regex_url,
+            status=404,
+            body=json.dumps({"label": "ORDER_NOT_FOUND", "message": "Order not found"}),
+            callback=callback,
+        )
+        return url
 
     def configure_order_not_found_error_order_status_response(
             self, order: InFlightOrder, mock_api: aioresponses,
             callback: Optional[Callable] = lambda *args, **kwargs: None
     ) -> List[str]:
-        # Implement the expected not found response when enabling
-        # test_lost_order_removed_if_not_found_during_order_status_update
-        raise NotImplementedError
+        url = web_utils.public_rest_url(
+            endpoint=CONSTANTS.ORDER_STATUS_PATH_URL.format(id=order.exchange_order_id)
+        )
+        regex_url = re.compile(f"^{url}".replace(".", r"\.").replace("?", r"\?") + ".*")
+        mock_api.get(
+            regex_url,
+            status=404,
+            body=json.dumps({"label": "ORDER_NOT_FOUND", "message": "Order not found"}),
+            callback=callback,
+        )
+        return [url]
 
     def configure_completely_filled_order_status_response(
             self,
@@ -1117,7 +1193,8 @@ class GateIoPerpetualDerivativeTests(AbstractPerpetualDerivativeTests.PerpetualD
                     "role": "maker",
                     "text": order.client_order_id or "",
                     "fee": Decimal(self.expected_fill_fee.flat_fees[0].amount),
-                    "point_fee": 0
+                    "point_fee": 0,
+                    "close_size": "0"
                 }
             ]
         }
@@ -1500,18 +1577,6 @@ class GateIoPerpetualDerivativeTests(AbstractPerpetualDerivativeTests.PerpetualD
             )
         )
 
-    @aioresponses()
-    def test_cancel_order_not_found_in_the_exchange(self, mock_api):
-        # Disabling this test because the connector has not been updated yet to validate
-        # order not found during cancellation (check _is_order_not_found_during_cancelation_error)
-        pass
-
-    @aioresponses()
-    def test_lost_order_removed_if_not_found_during_order_status_update(self, mock_api):
-        # Disabling this test because the connector has not been updated yet to validate
-        # order not found during status update (check _is_order_not_found_during_status_update_error)
-        pass
-
     def _order_cancelation_request_successful_mock_response(self, order: InFlightOrder) -> Any:
         return {
             "id": order.exchange_order_id,
@@ -1604,7 +1669,8 @@ class GateIoPerpetualDerivativeTests(AbstractPerpetualDerivativeTests.PerpetualD
                 "text": order.client_order_id,
                 "fee": str(self.expected_fill_fee.flat_fees[0].amount),
                 "point_fee": "0",
-                "role": "taker"
+                "role": "taker",
+                "close_size": "0"
             }
         ]
 
@@ -1740,6 +1806,7 @@ class GateIoPerpetualDerivativeTests(AbstractPerpetualDerivativeTests.PerpetualD
                     "is_liq": False
                 },
                 "mode": "single",
+                "pos_margin_mode": "isolated",
                 "update_time": 1684994406,
                 "cross_leverage_limit": "0"
             }
@@ -1750,6 +1817,8 @@ class GateIoPerpetualDerivativeTests(AbstractPerpetualDerivativeTests.PerpetualD
         position: Position = self.exchange.account_positions[self.trading_pair]
         self.assertEqual(self.trading_pair, position.trading_pair)
         self.assertEqual(PositionSide.LONG, position.position_side)
+        self.assertEqual(Decimal("0"), position.leverage)
+        self.assertEqual("isolated", self.exchange._position_margin_mode[self.trading_pair])
 
         get_position_url = web_utils.public_rest_url(
             endpoint=CONSTANTS.POSITION_INFORMATION_URL
@@ -1783,6 +1852,7 @@ class GateIoPerpetualDerivativeTests(AbstractPerpetualDerivativeTests.PerpetualD
                     "is_liq": False
                 },
                 "mode": "dual_long",
+                "pos_margin_mode": "isolated",
                 "update_time": 1684994406,
                 "cross_leverage_limit": "0"
             }
@@ -1792,3 +1862,115 @@ class GateIoPerpetualDerivativeTests(AbstractPerpetualDerivativeTests.PerpetualD
         position: Position = self.exchange.account_positions[f"{self.trading_pair}LONG"]
         self.assertEqual(self.trading_pair, position.trading_pair)
         self.assertEqual(PositionSide.LONG, position.position_side)
+        self.assertEqual(Decimal("0"), position.leverage)
+
+    @aioresponses()
+    def test_update_position_cross_margin(
+            self,
+            mock_api: aioresponses,
+    ):
+        self._simulate_trading_rules_initialized()
+        get_position_url = web_utils.public_rest_url(
+            endpoint=CONSTANTS.POSITION_INFORMATION_URL
+        )
+        regex_get_position_url = re.compile(f"^{get_position_url}")
+        response = [
+            {
+                "user": 10000,
+                "contract": "BTC_USDT",
+                "size": 9440,
+                "leverage": "0",
+                "risk_limit": "100",
+                "leverage_max": "100",
+                "maintenance_rate": "0.005",
+                "value": "2.497143098997",
+                "margin": "4.431548146258",
+                "entry_price": "3779.55",
+                "liq_price": "99999999",
+                "mark_price": "3780.32",
+                "unrealised_pnl": "-0.000507486844",
+                "realised_pnl": "0.045543982432",
+                "history_pnl": "0",
+                "last_close_pnl": "0",
+                "realised_point": "0",
+                "history_point": "0",
+                "adl_ranking": 5,
+                "pending_orders": 16,
+                "close_order": {
+                    "id": 232323,
+                    "price": "3779",
+                    "is_liq": False
+                },
+                "mode": "single",
+                "pos_margin_mode": "cross",
+                "update_time": 1684994406,
+                "cross_leverage_limit": "10"
+            }
+        ]
+        mock_api.get(regex_get_position_url, body=json.dumps(response))
+        self.async_run_with_timeout(self.exchange._update_positions())
+
+        position: Position = self.exchange.account_positions[self.trading_pair]
+        self.assertEqual(self.trading_pair, position.trading_pair)
+        self.assertEqual(PositionSide.LONG, position.position_side)
+        self.assertEqual(Decimal("10"), position.leverage)
+        self.assertEqual("cross", self.exchange._position_margin_mode[self.trading_pair])
+
+    @aioresponses()
+    def test_set_leverage_cross_margin_success(
+            self,
+            mock_api: aioresponses,
+    ):
+        self._simulate_trading_rules_initialized()
+        request_sent_event = asyncio.Event()
+        target_leverage = 10
+        self.exchange._position_margin_mode[self.trading_pair] = "cross"
+
+        if self.exchange.position_mode is PositionMode.ONEWAY:
+            endpoint = CONSTANTS.ONEWAY_SET_LEVERAGE_PATH_URL.format(contract=self.exchange_trading_pair)
+        else:
+            endpoint = CONSTANTS.HEDGE_SET_LEVERAGE_PATH_URL.format(contract=self.exchange_trading_pair)
+        url = web_utils.public_rest_url(endpoint=endpoint)
+        regex_url = re.compile(f"^{url}")
+        mock_response = [
+            {
+                "user": 10000,
+                "contract": "BTC_USDT",
+                "size": -9440,
+                "leverage": "0",
+                "risk_limit": "100",
+                "leverage_max": "100",
+                "maintenance_rate": "0.005",
+                "value": "2.497143098997",
+                "margin": "4.431548146258",
+                "entry_price": "3779.55",
+                "liq_price": "99999999",
+                "mark_price": "3780.32",
+                "unrealised_pnl": "-0.000507486844",
+                "realised_pnl": "0.045543982432",
+                "history_pnl": "0",
+                "last_close_pnl": "0",
+                "realised_point": "0",
+                "history_point": "0",
+                "adl_ranking": 5,
+                "pending_orders": 16,
+                "close_order": {
+                    "id": 232323,
+                    "price": "3779",
+                    "is_liq": False
+                },
+                "mode": "single",
+                "cross_leverage_limit": str(target_leverage)
+            }
+        ]
+        mock_api.post(regex_url, body=json.dumps(mock_response), callback=lambda *args, **kwargs: request_sent_event.set())
+
+        self.exchange.set_leverage(trading_pair=self.trading_pair, leverage=target_leverage)
+        self.async_run_with_timeout(request_sent_event.wait())
+
+        self.assertTrue(
+            self.is_logged(
+                log_level="INFO",
+                message=f"Leverage for {self.trading_pair} successfully set to {target_leverage}.",
+            )
+        )
